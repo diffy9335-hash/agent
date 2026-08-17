@@ -1,17 +1,50 @@
 import asyncio
 import random
+import json
+import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.types import (
+    Message, ReplyKeyboardMarkup, KeyboardButton, 
+    ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
+)
 
 # Твой токен
 TOKEN = "8800738908:AAGi-AbB2OYPEEbUtv37C8kNE78JZ-am9J8"
 
+# Твой канал
+CHANNEL_USERNAME = "@jdoauqh"
+CHANNEL_URL = "https://t.me/jdoauqh"
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Временная БД (очищается при перезапуске скрипта)
-users_db = {}
+# --- РАБОТА С СХРАНЕНИЕМ ДАННЫХ (JSON БД) ---
+DB_FILE = "users_db.json"
+
+def load_db():
+    """Загружает базу данных из файла JSON при запуске бота"""
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # Конвертируем ключи обратно в INT (в JSON ключи всегда становятся строками)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            print(f"Ошибка загрузки БД: {e}")
+            return {}
+    return {}
+
+def save_db():
+    """Сохраняет текущую базу данных в файл JSON"""
+    try:
+        with open(DB_FILE, "w", encoding="utf-8") as f:
+            json.dump(users_db, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"Ошибка сохранения БД: {e}")
+
+# Инициализируем базу данных из файла
+users_db = load_db()
 
 RATING_LIMITS = {
     1: 2,
@@ -20,6 +53,21 @@ RATING_LIMITS = {
     4: 12,
     5: 30
 }
+
+# --- ФУНКЦИЯ ПРОВЕРКИ ПОДПИСКИ ---
+async def check_subscription(bot: Bot, user_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return member.status not in ["left", "kicked"]
+    except Exception as e:
+        print(f"Ошибка проверки подписки (Бот админ в канале?): {e}")
+        return False
+
+def get_sub_menu():
+    kb = [
+        [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_URL)]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 def get_difficulty_menu():
     kb = [
@@ -37,7 +85,7 @@ def get_main_menu():
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
 def get_shop_menu(diff):
-    edu_chance = 30 if diff == "Easy" else 15 if diff == "Normal" else 5
+    edu_chance = 40 if diff == "Easy" else 25 if diff == "Normal" else 15
     kb = [
         [KeyboardButton(text=f"📚 Обучение (Шанс {edu_chance}%) - $50,000")],
         [KeyboardButton(text="🏎 Спорткар - $250,000"), KeyboardButton(text="🏢 Элитный офис - $500,000")],
@@ -46,7 +94,6 @@ def get_shop_menu(diff):
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
-# Хелпер для проверки, играет ли человек (выбрал ли сложность)
 def is_playing(user_id):
     return user_id in users_db and users_db[user_id].get('state') == 'playing'
 
@@ -57,8 +104,7 @@ async def check_endings(message: Message, user_id: int):
     user = users_db[user_id]
     diff = user['difficulty']
     
-    # Динамический лимит банкротства
-    bank_limit = -50000 if diff == "Easy" else -25000 if diff == "Normal" else -10000
+    bank_limit = -50000 if diff == "Easy" else -35000 if diff == "Normal" else -20000
     
     if user['rep'] > 100:
         user['rep'] = 100
@@ -69,6 +115,7 @@ async def check_endings(message: Message, user_id: int):
             reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
         del users_db[user_id]
+        save_db() # Сохраняем удаление игрока
         return True
         
     elif user['rep'] <= 0:
@@ -77,26 +124,43 @@ async def check_endings(message: Message, user_id: int):
             reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
         del users_db[user_id]
+        save_db() # Сохраняем удаление игрока
         return True
         
     elif user['money'] >= 1000000000 and user['rating'] >= 5:
+        user['money'] = 1000000000
+        user['state'] = 'won'
+        
         await message.answer(
             "🏆 **АБСОЛЮТНАЯ ЛЕГЕНДА!**\n"
-            "Поздравляем! Ты заработал невероятный **$1,000,000,000** и стал самым богатым агентом в истории футбола. Игра пройдена!\n\nНажми /start, чтобы перепройти на другой сложности.",
+            "Поздравляем! Ты заработал невероятный **$1,000,000,000** и стал самым богатым агентом в истории футбола.\n\n"
+            "Твой agent навсегда сохранен в Зале Славы (Топ Лидеров) с 1 миллиардом на счету!\n\nНажми /start, если хочешь начать карьеру заново.",
             reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown"
         )
-        del users_db[user_id]
+        save_db() # Сохраняем победный статус игрока
         return True
         
     return False
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message):
-    # Устанавливаем статус "выбор сложности"
+async def cmd_start(message: Message, bot: Bot):
+    is_subscribed = await check_subscription(bot, message.from_user.id)
+    
+    if not is_subscribed:
+        await message.answer(
+            "❗️ **Доступ закрыт!**\n\n"
+            "Для того чтобы начать игру, тебе необходимо подписаться на наш официальный канал.\n\n"
+            "✅ Подпишись и нажми /start снова.",
+            reply_markup=get_sub_menu(),
+            parse_mode="Markdown"
+        )
+        return
+
     users_db[message.from_user.id] = {'state': 'choosing_difficulty'}
+    save_db()
     
     await message.answer(
-        "👋 Добро пожаловать в хардкорный симулятор агента!\n\n"
+        "👋 Добро пожаловать в симулятор агента!\n\n"
         "🎯 **Твоя главная цель:** Заработать **$1,000,000,000** и достичь 5-го уровня рейтинга.\n"
         "Следи за репутацией (максимум 100) и избегай долгов. Чем выше сложность, тем меньше у тебя прав на ошибку.\n\n"
         "⚙️ **Выбери уровень сложности для старта:**",
@@ -127,11 +191,12 @@ async def set_difficulty(message: Message):
         'name': message.from_user.first_name or "Агент",
         'money': start_money,
         'rep': 50 if diff_code != "Hard" else 30,
-        'players': [], # Оставляем список пустышек для расчета количества
+        'players': [], 
         'age': 23,
         'weeks': 0,
         'rating': 1
     }
+    save_db()
     
     await message.answer(
         f"✅ Выбрана сложность: **{diff_text}**.\nСтартовый капитал: **${start_money:,}**.\n\nУдачи, она тебе понадобится!", 
@@ -172,15 +237,16 @@ async def scouting(message: Message):
     u['money'] -= 5000
     if await check_endings(message, user_id): return
     
-    # Динамический шанс скаутинга в зависимости от сложности
     diff = u['difficulty']
-    chance = 0.50 if diff == "Easy" else 0.30 if diff == "Normal" else 0.15
+    chance = 0.60 if diff == "Easy" else 0.40 if diff == "Normal" else 0.25
     
     if random.random() < chance:
         u['players'].append(1) 
         await message.answer("✅ Успех! Ты отыскал талантливого клиента и подписал с ним контракт.", parse_mode="Markdown")
     else:
         await message.answer("❌ Провал. Скауты вернулись ни с чем, а деньги потрачены зря.")
+    
+    save_db()
 
 @dp.message(F.text == "🛒 Магазин")
 async def shop_menu(message: Message):
@@ -201,8 +267,8 @@ async def show_total_agents(message: Message):
     if not is_playing(message.from_user.id):
         return await message.answer("Сначала выбери сложность или нажми /start.")
     
-    total = sum(1 for user in users_db.values() if user.get('state') == 'playing')
-    await message.answer(f"📊 В данный момент на сервере активно строят карьеру агентов: **{total}**\n\n*Конкуренты дышат в спину!*", parse_mode="Markdown")
+    total = sum(1 for user in users_db.values() if user.get('state') in ['playing', 'won'])
+    await message.answer(f"📊 В данный момент в нашей базе зарегистрировано агентов: **{total}**\n\n*Конкуренты дышат в спину!*", parse_mode="Markdown")
 
 # --- ПОКУПКИ В МАГАЗИНЕ ---
 @dp.message(F.text.startswith("📚 Обучение"))
@@ -217,13 +283,15 @@ async def buy_education(message: Message):
     u['money'] -= 50000
     
     diff = u['difficulty']
-    chance = 0.30 if diff == "Easy" else 0.15 if diff == "Normal" else 0.05
+    chance = 0.40 if diff == "Easy" else 0.25 if diff == "Normal" else 0.15
     
     if random.random() < chance:
         u['rating'] += 1
         await message.answer(f"🎓 Потрясающе! Экзамен сдан! Твой рейтинг теперь **{u['rating']}**.", parse_mode="Markdown")
     else:
         await message.answer("❌ Ты завалил экзамены. Наблюдатели сочли тебя некомпетентным. Деньги улетели на ветер.")
+    
+    save_db()
     await check_endings(message, user_id)
 
 @dp.message(F.text.startswith("🏎 Спорткар"))
@@ -236,6 +304,8 @@ async def buy_car(message: Message):
     u['money'] -= 250000
     u['rep'] += 10
     await message.answer("🏎 Куплен спорткар! Игроки видят твой статус. Репутация +10.")
+    
+    save_db()
     await check_endings(message, user_id)
 
 @dp.message(F.text.startswith("🏢 Элитный офис"))
@@ -248,6 +318,8 @@ async def buy_office(message: Message):
     u['money'] -= 500000
     u['rep'] += 15
     await message.answer("🏢 Куплен шикарный офис в центре! Репутация +15.")
+    
+    save_db()
     await check_endings(message, user_id)
 
 @dp.message(F.text.startswith("🏰 Особняк"))
@@ -260,6 +332,8 @@ async def buy_mansion(message: Message):
     u['money'] -= 3500000
     u['rep'] += 25
     await message.answer("🏰 Огромный особняк куплен! Все профильные газеты пишут о тебе. Репутация +25.")
+    
+    save_db()
     await check_endings(message, user_id)
 
 @dp.message(F.text.startswith("✈️ Самолет"))
@@ -272,20 +346,35 @@ async def buy_jet(message: Message):
     u['money'] -= 5500000
     u['rep'] += 40
     await message.answer("✈️ Частный самолет твой! Топовые игроки сами хотят к тебе в агентство. Репутация +40.")
+    
+    save_db()
     await check_endings(message, user_id)
 
 @dp.message(F.text == "🏆 Лидеры и Рейтинг")
 async def show_leaders(message: Message):
-    if not is_playing(message.from_user.id):
+    user_state = users_db.get(message.from_user.id, {}).get('state')
+    if user_state not in ['playing', 'won']:
         return await message.answer("Сначала выбери сложность или нажми /start.")
         
-    sorted_users = sorted([user for user in users_db.values() if user.get('state') == 'playing'], key=lambda x: x['money'], reverse=True)
-    leaderboard = "🏆 **Форбс Футбольных Агентов:**\n\n"
-    for i, u in enumerate(sorted_users[:10], 1):
-        leaderboard += f"{i}. {u['name']} ({u['difficulty']}) | Капитал: ${u['money']:,}\n"
+    valid_users = [u for u in users_db.values() if u.get('state') in ['playing', 'won']]
     
-    if not sorted_users:
-        leaderboard += "Пока никого нет."
+    def generate_top(diff_code, title):
+        users_diff = [u for u in valid_users if u.get('difficulty') == diff_code]
+        sorted_users = sorted(users_diff, key=lambda x: x['money'], reverse=True)[:10]
+        
+        block = f"**{title}**\n"
+        if not sorted_users:
+            block += "Пока никого нет.\n"
+        else:
+            for i, u in enumerate(sorted_users, 1):
+                status = "👑 ПРОЙДЕНО" if u.get('state') == 'won' else f"⭐ {u['rating']}/5"
+                block += f"{i}. {u['name']} | ${u['money']:,} | {status}\n"
+        return block + "\n"
+
+    leaderboard = "🏆 **ФОРБС ФУТБОЛЬНЫХ АГЕНТОВ (Топ-10)** 🏆\n\n"
+    leaderboard += generate_top("Easy", "🟢 Легкая сложность")
+    leaderboard += generate_top("Normal", "🟡 Нормальная сложность")
+    leaderboard += generate_top("Hard", "🔴 Хардкор")
         
     await message.answer(leaderboard, parse_mode="Markdown")
 
@@ -304,50 +393,49 @@ async def next_week(message: Message):
         u['weeks'] = 0
         await message.answer(f"🎂 Прошел год! Твой возраст: {u['age']}.")
 
-    # Расходы на выживание зависят от сложности
-    expense = 2000 if diff == "Easy" else 5000 if diff == "Normal" else 10000
+    expense = 2000 if diff == "Easy" else 4000 if diff == "Normal" else 7000
     players_count = len(u['players'])
 
     if players_count == 0:
         await message.answer(f"📉 Нет клиентов. Расходы на проживание и офис списываются в минус: -${expense:,}.")
         u['money'] -= expense
     else:
-        # Жесткая настройка шансов под уровни сложности
-        mega_chance = 0.03 if diff == "Easy" else 0.01 if diff == "Normal" else 0.001
-        norm_chance = 0.40 if diff == "Easy" else 0.30 if diff == "Normal" else 0.15
-        scand_chance = 0.20 if diff == "Easy" else 0.35 if diff == "Normal" else 0.50
+        mega_chance = 0.03 if diff == "Easy" else 0.02 if diff == "Normal" else 0.01
+        norm_chance = 0.50 if diff == "Easy" else 0.40 if diff == "Normal" else 0.30
+        scand_chance = 0.15 if diff == "Easy" else 0.25 if diff == "Normal" else 0.35
         
         event_roll = random.random()
         
-        if event_roll < mega_chance: # Мега-трансфер
-            max_payout = 20_000_000 if diff == "Easy" else 10_000_000 if diff == "Normal" else 5_000_000
+        if event_roll < mega_chance:
+            max_payout = 20_000_000 if diff == "Easy" else 15_000_000 if diff == "Normal" else 10_000_000
             mega_profit = random.randint(2_000_000, max_payout) * u['rating']
             u['money'] += mega_profit
             u['rep'] += 5
             await message.answer(f"🔥 **МЕГА-ТРАНСФЕР!** Твой клиент перешел в топ-клуб! Сумасшедшие комиссионные: +${mega_profit:,}", parse_mode="Markdown")
             
-        elif event_roll < mega_chance + norm_chance: # Обычный доход
-            prof_multi = 1.0 if diff == "Easy" else 0.7 if diff == "Normal" else 0.4
+        elif event_roll < mega_chance + norm_chance:
+            prof_multi = 1.0 if diff == "Easy" else 0.8 if diff == "Normal" else 0.6
             profit = int(players_count * random.randint(10000, 40000) * u['rating'] * prof_multi)
             u['money'] += profit
             u['rep'] += 1
             await message.answer(f"⚽️ Клиенты получили зарплату. Твои проценты составили: +${profit:,}")
             
-        elif event_roll < mega_chance + norm_chance + scand_chance: # Скандал
-            fine_multi = 1.0 if diff == "Easy" else 2.0 if diff == "Normal" else 4.0
+        elif event_roll < mega_chance + norm_chance + scand_chance:
+            fine_multi = 1.0 if diff == "Easy" else 1.5 if diff == "Normal" else 2.5
             fine = int(random.randint(20000, 75000) * fine_multi)
             u['money'] -= fine
-            u['rep'] -= 5 if diff == "Easy" else 10 if diff == "Normal" else 20
-            await message.answer(f"🚨 **Скандал!** Клиент вляпался в неприятности. Штрафы и адвокаты обошлись в -${fine:,}. Репутация серьезно пострадала!", parse_mode="Markdown")
+            u['rep'] -= 5 if diff == "Easy" else 8 if diff == "Normal" else 15
+            await message.answer(f"🚨 **Скандал!** Клиент вляпался в неприятности. Штрафы и адвокаты обошлись in -${fine:,}. Репутация серьезно пострадала!", parse_mode="Markdown")
             
-        else: # Ничего (Тихая неделя)
+        else:
             await message.answer(f"📅 Тихая неделя. Новостей нет, а вот налоги и счета за офис оплатить нужно (-${expense:,}).")
             u['money'] -= expense
 
+    save_db()
     await check_endings(message, user_id)
 
 async def main():
-    print("Бот запущен. Версия: Хардкорное Агентство (Без бизнесов)!")
+    print("Бот запущен. База данных JSON подключена!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
