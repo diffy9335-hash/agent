@@ -6,7 +6,7 @@ from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 # Токен: сначала пробуем взять из переменной окружения, иначе — хардкод
-TOKEN = os.getenv("BOT_TOKEN", "8800738908:AAFl5Bcz74JwAR4xzWDDvesOnXuXURnxyVA")
+TOKEN = os.getenv("8800738908:AAFl5Bcz74JwAR4xzWDDvesOnXuXURnxyVA", "8800738908:AAFl5Bcz74JwAR4xzWDDvesOnXuXURnxyVA")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
