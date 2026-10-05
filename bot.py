@@ -35,15 +35,21 @@ async def render(target, text, markup):
 
 
 def pline(p):
-    return f"{p['name']} · {p['pos']} · {p['age']}л · OVR {p['ovr']}/{p['pot']} · {p['club']} · {fmt(p['value'])}"
+    mood = p.get("mood", 70)
+    face = "😊" if mood >= 60 else "😐" if mood >= 35 else "😡"
+    inj = f" · 🤕{p['inj']}н" if p.get("inj") else ""
+    return (f"{p['name']} · {p['pos']} · {p['age']}л · OVR {p['ovr']}/{p['pot']} · "
+            f"{p['club']} · {fmt(p['value'])} · {face}{mood}{inj} · 📝{p.get('ctr', 80)}н")
 
 
 def menu_text(st):
     return (f"🕴 Агент {st['name']}\n"
             f"📅 Неделя {st['week']} (сезон {(st['week'] - 1) // 52 + 1})\n"
+            f"{game.window_text(st)}\n"
             f"💰 {fmt(st['money'])} / цель {fmt(game.GOAL)}\n"
-            f"⭐ Репутация: {st['rep']}  ·  комиссия {commission_pct(st)}%\n"
+            f"⭐ Репутация: {st['rep']} ({game.rank(st['rep'])}) · комиссия {commission_pct(st)}%\n"
             f"🏢 Офис ур.{st['office']} · клиенты {len(st['clients'])}/{game.capacity(st)}\n"
+            f"🤝 Сделок: {st.get('deals', 0)} · место среди агентов: {game.standing(st)}/4\n"
             f"📨 Офферов: {len(st['offers'])}")
 
 
@@ -52,18 +58,40 @@ def commission_pct(st):
 
 
 MENU = [("🔍 Скаутинг", "scout"), ("👥 Клиенты", "clients"), ("📨 Офферы", "offers"),
-        ("🏢 Офис", "office"), ("⏭ Следующая неделя", "next")]
+        ("🏢 Офис", "office"), ("🏆 Рейтинг", "top"), ("🎯 Задания", "quests"), ("⏭ Следующая неделя", "next")]
+
+
+def menu_kb(st):
+    b = InlineKeyboardBuilder()
+    dil = bool(st.get("dilemma"))
+    if dil:
+        b.button(text="❗ Принять решение", callback_data="dil")
+    for t, d in MENU:
+        b.button(text=t, callback_data=d)
+    b.adjust(*([1] if dil else []), 2, 2, 2, 2)
+    return b.as_markup()
 
 
 @dp.message(Command("start"))
 async def start(m: Message):
+    game.touch_player(m.from_user.id, m.from_user.username or "", m.from_user.first_name or "")
     st = game.load(m.from_user.id)
     if not st or st["over"]:
         st = game.new_game(m.from_user.first_name or "Агент")
         game.save(m.from_user.id, st)
         await m.answer("⚽ Добро пожаловать в карьеру футбольного агента!\n"
                        f"Заработайте {fmt(game.GOAL)}, не уйдя в минус. Удачи!")
-    await m.answer(menu_text(st), reply_markup=kb(MENU, back=False))
+    await m.answer(menu_text(st), reply_markup=menu_kb(st))
+
+
+@dp.message(Command("stats"))
+async def stats(m: Message):
+    if str(m.from_user.id) != os.environ.get("ADMIN_ID", ""):
+        return
+    (cnt, games, wins), act, best = game.admin_stats()
+    txt = f"📊 Игроков: {cnt} (активны за 7 дней: {act})\nИгр сыграно: {games}, побед: {wins}\n\nТоп по деньгам:\n"
+    txt += "\n".join(f"{i + 1}. {n} @{u} — {fmt(mn)}" for i, (n, u, mn) in enumerate(best))
+    await m.answer(txt)
 
 
 @dp.message(Command("newgame"))
@@ -88,7 +116,7 @@ async def cb(c: CallbackQuery):
     note = ""
 
     if cmd == "menu":
-        await render(c, menu_text(st), kb(MENU, back=False))
+        await render(c, menu_text(st), menu_kb(st))
 
     elif cmd == "scout":
         if a[-1] == "go":
@@ -110,14 +138,23 @@ async def cb(c: CallbackQuery):
     elif cmd == "sign":
         note = game.sign(st, int(a[1]))
         txt = note + "\n\n" + menu_text(st)
-        await render(c, txt, kb(MENU, back=False))
+        await render(c, txt, menu_kb(st))
 
     elif cmd == "clients":
         if len(a) > 1 and a[1] == "drop":
             st["clients"] = [p for p in st["clients"] if p["id"] != int(a[2])]
             st["offers"] = [o for o in st["offers"] if o["pid"] != int(a[2])]
-        txt = "👥 Ваши клиенты:\n\n" + ("\n".join(pline(p) for p in st["clients"]) or "Пока никого.")
-        rows = [(f"❌ Расстаться: {p['name']}", f"clients:drop:{p['id']}") for p in st["clients"]]
+        if len(a) > 1 and a[1] == "train":
+            note = game.train(st, int(a[2]))
+        elif len(a) > 1 and a[1] == "renew":
+            note = game.renew(st, int(a[2]))
+        txt = (note + "\n\n" if note else "") + "👥 Ваши клиенты:\n\n" + (
+            "\n".join(pline(p) for p in st["clients"]) or "Пока никого.")
+        txt += "\n\n🏋️ тренировка · 📝 продлить контракт (📝Nн = недель осталось) · ❌ расстаться"
+        rows = []
+        for p in st["clients"]:
+            rows += [(f"🏋️ {p['name']}", f"clients:train:{p['id']}"), (f"📝 {p['name']}", f"clients:renew:{p['id']}"),
+                     (f"❌ {p['name']}", f"clients:drop:{p['id']}")]
         await render(c, txt, kb(rows))
 
     elif cmd == "offers":
@@ -129,8 +166,7 @@ async def cb(c: CallbackQuery):
                 elif a[1] == "neg":
                     note = game.negotiate(st, i)
                 elif a[1] == "rej":
-                    st["offers"].pop(i)
-                    note = "Оффер отклонён."
+                    note = game.reject(st, i)
         txt = (note + "\n\n" if note else "") + "📨 Офферы от клубов:\n\n"
         rows = []
         for i, o in enumerate(st["offers"]):
@@ -140,7 +176,7 @@ async def cb(c: CallbackQuery):
             rows += [(f"✅ {i + 1}", f"offers:acc:{i}"), (f"💬 {i + 1}", f"offers:neg:{i}"),
                      (f"🚫 {i + 1}", f"offers:rej:{i}")]
         if not st["offers"]:
-            txt += "Пока предложений нет. Листайте неделю."
+            txt += f"Пока предложений нет. {game.window_text(st)}."
         b = InlineKeyboardBuilder()
         for t, d in rows:
             b.button(text=t, callback_data=d)
@@ -163,26 +199,67 @@ async def cb(c: CallbackQuery):
         await render(c, txt, kb(rows))
 
     elif cmd == "next":
+        if st.get("dilemma"):
+            await c.answer("Сначала примите решение ❗", show_alert=True)
+            return
         log = game.next_week(st)
         if st["over"]:
+            game.record_game(uid, st)
             game.save(uid, st)
             await end_screen(c, st)
             await c.answer()
             return
         await render(c, "⏭ Неделя прошла:\n\n" + "\n".join(log) + "\n\n" + menu_text(st),
-                     kb(MENU, back=False))
+                     menu_kb(st))
+
+    elif cmd == "dil":
+        v = game.dilemma_view(st) if st.get("dilemma") else None
+        if len(a) > 1:
+            note = game.decide(st, int(a[1]))
+            await render(c, note + "\n\n" + menu_text(st), menu_kb(st))
+        elif v:
+            rows = [(lab, f"dil:{i}") for i, lab in enumerate(v[1])]
+            await render(c, "❗ Решение агента\n\n" + v[0], kb(rows, back=False))
+        else:
+            await render(c, menu_text(st), menu_kb(st))
+
+    elif cmd == "top":
+        rows = game.top()
+        txt = "🏆 Рейтинг агентов:\n\n" + "\n".join(
+            f"{i + 1}. {n} — {fmt(m)} · реп. {r} · нед. {w}" for i, (n, m, r, w) in enumerate(rows))
+        await render(c, txt, kb([]))
+
+    elif cmd == "quests":
+        txt = "🎯 Задания:\n\n"
+        for q in st["quests"]:
+            pr = min(q["t"], st["stats"][q["kind"]] - q["base"])
+            txt += f"• {q['text']} — {pr}/{q['t']} (награда {fmt(q['money'])}, реп. +{q['rep']})\n"
+        txt += "\n🏅 Достижения:\n"
+        for aid, name, _c, rew in game.ACH:
+            txt += f"{'✅' if aid in st['ach'] else '🔒'} {name} (+{fmt(rew)})\n"
+        txt += "\n🦈 Конкуренты:\n" + "\n".join(f"• {r['name']} — {fmt(r['money'])}" for r in st["rivals"])
+        await render(c, txt, kb([]))
 
     elif cmd == "restart":
         st = game.new_game(c.from_user.first_name or "Агент")
-        await render(c, menu_text(st), kb(MENU, back=False))
+        await render(c, menu_text(st), menu_kb(st))
 
+    msgs = game.check(st)
+    if st["over"]:
+        game.record_game(uid, st)
     game.save(uid, st)
+    if st["over"]:
+        await end_screen(c, st)
+    if msgs:
+        await c.message.answer("\n\n".join(msgs))
     await c.answer()
 
 
 async def end_screen(c: CallbackQuery, st):
     if st["over"] == "win":
         txt = f"🏆 Вы заработали {fmt(game.GOAL)} за {st['week']} нед. — легенда агентского бизнеса!"
+    elif st["over"] == "rival":
+        txt = "🦈 Конкурент первым достиг цели. Гонку агентов вы проиграли!"
     else:
         txt = "💀 Агентство обанкротилось. Попробуйте ещё раз!"
     await render(c, txt, kb([("🔄 Новая игра", "restart")], back=False))
