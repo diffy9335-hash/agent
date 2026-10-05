@@ -285,5 +285,9 @@ async def main():
     await dp.start_polling(bot)
 
 
+print(f"[DB] Путь к базе: {game.DB}")
+print(f"[DB] Файл существует: {os.path.exists(game.DB)}")
+
+
 if __name__ == "__main__":
     asyncio.run(main())
