@@ -188,9 +188,23 @@ async def end_screen(c: CallbackQuery, st):
     await render(c, txt, kb([("🔄 Новая игра", "restart")], back=False))
 
 
+def load_env(path=".env"):
+    """Минимальный загрузчик .env (без внешних библиотек)."""
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
-    bot = Bot(os.environ["BOT_TOKEN"])
+    load_env()
+    token = os.environ.get("BOT_TOKEN", "").strip().strip("'\"")
+    if ":" not in token:
+        raise SystemExit("BOT_TOKEN не задан или неверный. Формат: 123456789:AAH... (без кавычек и пробелов)")
+    bot = Bot(token)
     await dp.start_polling(bot)
 
 
